@@ -11,7 +11,9 @@ from app.tools.azure_lb_tools import lb_metrics_query, get_lb_resource_health, l
 from app.tools.azure_appgw_tools import appgw_metrics_query, get_appgw_resource_health, appgw_backend_health_query
 from app.tools.azure_vm_tools import get_vm_resource_health
 from app.tools.azure_vm_tools import vm_metrics_query
+from app.tools.azure_vm_tools import vm_disk_sku_query
 from app.tools.azure_vm_tools import vm_restart
+from app.tools.azure_service_health_tools import list_service_health_events, EVENT_TYPE_LABELS
 
 
 SKILLS_DIR = Path(__file__).resolve().parent
@@ -74,6 +76,21 @@ def build_framework_skills() -> Sequence[Skill]:
         metrics = (metrics_result.data or {}).get("metrics", []) if metrics_result.ok else []
         start_time_bj = (metrics_result.data or {}).get("start_time_beijing", "N/A") if metrics_result.ok else "N/A"
         end_time_bj = (metrics_result.data or {}).get("end_time_beijing", "N/A") if metrics_result.ok else "N/A"
+
+        # 查询磁盘 SKU 信息
+        disk_sku_result = vm_disk_sku_query(resource_group=resource_group, vm_name=vm_name)
+        os_disk_sku = ""
+        lun_disk_skus: dict[str, str] = {}  # lun -> sku描述
+        if disk_sku_result.ok:
+            os_info = (disk_sku_result.data or {}).get("os_disk", {})
+            os_sku = os_info.get("sku", "unknown")
+            os_size = os_info.get("size_gb")
+            os_disk_sku = f"{os_sku}" + (f"/{os_size}GB" if os_size else "")
+            for dd in (disk_sku_result.data or {}).get("data_disks", []):
+                lun = str(dd.get("lun", ""))
+                sku = dd.get("sku", "unknown")
+                size = dd.get("size_gb")
+                lun_disk_skus[lun] = f"{sku}" + (f"/{size}GB" if size else "")
 
         # ── 通用指标聚合辅助 ──
         def _peak(metric_name: str, field: str = "maximum") -> float | None:
@@ -254,9 +271,9 @@ def build_framework_skills() -> Sequence[Skill]:
             event_lines.append("  （无运行状况事件记录）")
 
         data_disk_lines = [
-            f"  [数据盘 LUN {d['lun']}]读IOPS峰值={_fmt(d['read_iops'])}，写IOPS峰值={_fmt(d['write_iops'])}，读吞吐峰值={_fmt(d['read_bps'], ' B/s')}，写吞吐峰值={_fmt(d['write_bps'], ' B/s')}"
+            f"  [数据盘 LUN {d['lun']}{' ' + lun_disk_skus.get(str(d['lun']), '') if lun_disk_skus.get(str(d['lun'])) else ''}]读IOPS峰值={_fmt(d['read_iops'])}，写IOPS峰值={_fmt(d['write_iops'])}，读吞吐峰值={_fmt(d['read_bps'], ' B/s')}，写吞吐峰值={_fmt(d['write_bps'], ' B/s')}"
             for d in per_lun
-        ] if per_lun else ["  [数据盘]无数据盘或无指标数据"]
+        ] if per_lun else ["　　[数据盘]无数据盘或无指标数据"]
 
         summary_lines = [
             f"【VM诊断摘要】主机 {resource_group}/{vm_name}",
@@ -266,7 +283,7 @@ def build_framework_skills() -> Sequence[Skill]:
             f"",
             f"二、关键指标峰值/最低值：",
             f"  CPU峰值={_fmt(cpu_peak, '%')}，内存峰值={_fmt(memory_peak, '%')}",
-            f"  [OS盘]读IOPS峰值={_fmt(os_disk_read_iops_peak)}，写IOPS峰值={_fmt(os_disk_write_iops_peak)}，读吞吐峰值={_fmt(os_disk_read_bps_peak, ' B/s')}，写吞吐峰值={_fmt(os_disk_write_bps_peak, ' B/s')}",
+            f"  [OS盘{' ' + os_disk_sku if os_disk_sku else ''}]读IOPS峰值={_fmt(os_disk_read_iops_peak)}，写IOPS峰值={_fmt(os_disk_write_iops_peak)}，读吞吐峰值={_fmt(os_disk_read_bps_peak, ' B/s')}，写吞吐峰值={_fmt(os_disk_write_bps_peak, ' B/s')}",
             *data_disk_lines,
             f"  网络入连接峰值={_fmt(net_in_flows_peak)}，网络出连接峰值={_fmt(net_out_flows_peak)}",
             f"",
@@ -791,4 +808,70 @@ def build_framework_skills() -> Sequence[Skill]:
         )
 
     skills.append(slb_auto_skill)
+
+    # ── 服务健康事件 skill ──────────────────────────────
+    sh_content = _load_skill_markdown(
+        "service_health_skill.md",
+        "当用户要求查询服务健康事件时，调用 query_service_health 查询并输出结果。",
+    )
+    sh_skill = Skill(
+        name="service-health-skill",
+        description="用于查询 Azure 服务健康事件（服务问题/计划维护/健康公告/安全公告/计费更新）。调用后必须将 query_service_health 返回值原样输出，禁止改写或缩写。",
+        content=sh_content,
+    )
+
+    @sh_skill.script(name="query_service_health", description="查询订阅级服务健康事件")
+    def _query_service_health(
+        event_type: str | None = None,
+        top_n: int = 10,
+    ) -> str:
+        result = list_service_health_events(event_type=event_type, top_n=top_n)
+        if not result.ok:
+            return f"查询失败：{result.message}"
+
+        events = (result.data or {}).get("events", [])
+        total = (result.data or {}).get("total_count", 0)
+        returned = (result.data or {}).get("returned_count", 0)
+        sub_id = (result.data or {}).get("subscription_id") or "N/A"
+        filter_type = (result.data or {}).get("filter_event_type")
+        type_label = EVENT_TYPE_LABELS.get(filter_type or "", "全部")
+
+        if not events:
+            return f"【服务健康事件】订阅={sub_id}，无事件记录。"
+
+        lines: list[str] = [
+            f"【服务健康事件】订阅={sub_id}",
+            "",
+        ]
+        for idx, ev in enumerate(events, 1):
+            start = ev.get("impact_start_beijing") or "N/A"
+            end = ev.get("impact_end_beijing") or "进行中"
+            # 0001-01-01 是 Azure 的默认空值，视为 "进行中"
+            if end.startswith("0001"):
+                end = "进行中"
+            services = []
+            for imp in ev.get("impacted_services", []):
+                svc = imp.get("service") or "未知服务"
+                region_list = [r.get("region", "") for r in imp.get("regions", []) if r.get("region")]
+                if len(region_list) > 10:
+                    regions_text = "Global"
+                else:
+                    regions_text = ", ".join(region_list)
+                services.append(f"{svc}" + (f"({regions_text})" if regions_text else ""))
+            svc_text = "; ".join(services) if services else "N/A"
+            status = ev.get("status") or "N/A"
+            level = ev.get("level") or "N/A"
+            ev_type_label = ev.get("event_type_label") or ev.get("event_type") or "N/A"
+            title = ev.get("title") or "N/A"
+
+            lines.append(
+                f"  {idx}. 主题：{title}\n"
+                f"     [{start} ~ {end}] "
+                f"状态={status} | 级别={level} | 类型={ev_type_label}\n"
+                f"     影响：{svc_text}"
+            )
+
+        return "\n".join(lines)
+
+    skills.append(sh_skill)
     return skills

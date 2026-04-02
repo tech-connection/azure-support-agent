@@ -63,6 +63,71 @@ def _parse_text(content: str | None) -> str:
     return ""
 
 
+# ── 消息卡片构建 ──────────────────────────────
+_CARD_HEADERS = {
+    "【VM诊断摘要】": ("blue", "VM 诊断报告"),
+    "【LB诊断摘要】": ("blue", "LB 诊断报告"),
+    "【AppGw诊断摘要】": ("blue", "AppGw 诊断报告"),
+}
+
+
+def _build_card(text: str) -> str | None:
+    """如果文本是诊断摘要，构建飞书消息卡片 JSON；否则返回 None。"""
+    header_color = "blue"
+    header_title = ""
+    for prefix, (color, title) in _CARD_HEADERS.items():
+        if text.startswith(prefix):
+            header_color = color
+            header_title = title
+            break
+    else:
+        return None
+
+    # 拆分为各段落
+    sections = text.split("\n\n")
+    elements: list[dict] = []
+
+    for section in sections:
+        section = section.strip()
+        if not section:
+            continue
+        # 异常结论段用红/绿色标记
+        if section.startswith("一、异常结论："):
+            conclusion = section[len("一、异常结论："):]
+            is_normal = "未发现明显异常" in conclusion
+            tag = "green" if is_normal else "red"
+            elements.append({
+                "tag": "markdown",
+                "content": f"**一、异常结论：**\n<font color='{tag}'>{conclusion}</font>",
+            })
+        elif section.startswith("四、下一步处置建议："):
+            elements.append({"tag": "hr"})
+            elements.append({
+                "tag": "markdown",
+                "content": section.replace("四、下一步处置建议：", "**四、下一步处置建议：**"),
+            })
+        else:
+            # 标题行加粗
+            lines = section.split("\n", 1)
+            title_line = lines[0]
+            for prefix in ("二、", "三、"):
+                if title_line.startswith(prefix):
+                    title_line = f"**{title_line}**"
+                    break
+            body = f"{title_line}\n{lines[1]}" if len(lines) > 1 else title_line
+            elements.append({"tag": "markdown", "content": body})
+
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": header_color,
+            "title": {"tag": "plain_text", "content": header_title},
+        },
+        "elements": elements,
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
 # ── 发送回复 ──────────────────────────────────
 def _send_reply(
     client: lark.Client,
@@ -71,7 +136,13 @@ def _send_reply(
     message_id: str,
     text: str,
 ) -> None:
-    content = json.dumps({"text": text}, ensure_ascii=False)
+    card_json = _build_card(text)
+    if card_json:
+        msg_type = "interactive"
+        content = card_json
+    else:
+        msg_type = "text"
+        content = json.dumps({"text": text}, ensure_ascii=False)
 
     if chat_type == "p2p":
         req = (
@@ -80,7 +151,7 @@ def _send_reply(
             .request_body(
                 CreateMessageRequestBody.builder()
                 .receive_id(chat_id)
-                .msg_type("text")
+                .msg_type(msg_type)
                 .content(content)
                 .build()
             )
@@ -93,7 +164,7 @@ def _send_reply(
             .message_id(message_id)
             .request_body(
                 ReplyMessageRequestBody.builder()
-                .msg_type("text")
+                .msg_type(msg_type)
                 .content(content)
                 .build()
             )

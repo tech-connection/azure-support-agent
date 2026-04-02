@@ -253,9 +253,8 @@ def lb_backend_health_query(
     backends: list[dict[str, Any]] = []
     for metric in getattr(response, "value", []) or []:
         for series in getattr(metric, "timeseries", []) or []:
-            # 从 metadata_values 中解析维度值
             dims: dict[str, str] = {}
-            for mv in getattr(series, "metadata_values", []) or []:
+            for mv in getattr(series, "metadatavalues", None) or []:
                 dim_name = getattr(getattr(mv, "name", None), "value", None) or ""
                 dim_val = getattr(mv, "value", None) or ""
                 if dim_name and dim_val:

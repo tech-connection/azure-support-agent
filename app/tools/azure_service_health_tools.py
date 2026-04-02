@@ -25,6 +25,7 @@ EVENT_TYPE_LABELS: dict[str, str] = {
     "PlannedMaintenance": "计划内维护",
     "HealthAdvisory": "运行状况公告",
     "SecurityAdvisory": "安全公告",
+    "Billing": "计费更新",
 }
 
 VALID_EVENT_TYPES = set(EVENT_TYPE_LABELS.keys())
@@ -50,7 +51,11 @@ def _extract_impact(impact_list: Any) -> list[dict[str, Any]]:
         return []
     items: list[dict[str, Any]] = []
     for imp in impact_list:
-        service_name = getattr(imp, "impact_service_name", None) or getattr(imp, "service_name", None)
+        service_name = (
+            getattr(imp, "impacted_service", None)
+            or getattr(imp, "impacted_service_name", None)
+            or getattr(imp, "service_name", None)
+        )
         regions = []
         for region in (getattr(imp, "impacted_regions", None) or []):
             region_name = getattr(region, "impacted_region", None) or getattr(region, "region_name", None)
@@ -80,8 +85,8 @@ def list_service_health_events(
     Parameters
     ----------
     event_type:
-        可选，筛选事件类型：ServiceIssue / PlannedMaintenance /
-        HealthAdvisory / SecurityAdvisory。为空则返回全部。
+        可选，筛选事件类型：ServiceIssue（服务问题） / PlannedMaintenance /
+        HealthAdvisory / SecurityAdvisory / Billing（计费更新）。为空则返回全部。
     top_n:
         返回最近 N 条，默认 10，最大 50。
     """
@@ -103,9 +108,11 @@ def list_service_health_events(
 
     try:
         client = get_resource_health_client()
+        # 回查 90 天，避免 API 默认窗口过短而漏掉事件
+        lookback = datetime.now(tz=timezone.utc) - timedelta(days=90)
         raw_events = list(client.events.list_by_subscription_id(
             filter=odata_filter,
-            query_start_time=None,
+            query_start_time=lookback.strftime("%Y-%m-%dT%H:%M:%SZ"),
         ))
     except AttributeError:
         # SDK 版本不支持 events 操作组

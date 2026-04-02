@@ -158,6 +158,67 @@ def _to_vm_item(vm: Any, power_state: str) -> dict[str, Any]:
     }
 
 
+def vm_disk_sku_query(resource_group: str, vm_name: str) -> ToolResult:
+    """查询 VM 的 OS 盘和数据盘 SKU 信息（磁盘类型、大小、LUN 映射）。"""
+    client = get_compute_client()
+    try:
+        vm = client.virtual_machines.get(resource_group, vm_name)
+    except ResourceNotFoundError:
+        return ToolResult(ok=False, code="NOT_FOUND", message=f"VM 不存在: {resource_group}/{vm_name}")
+    except ClientAuthenticationError as exc:
+        return ToolResult(ok=False, code="UNAUTHORIZED", message=_format_auth_error(exc))
+    except Exception as exc:
+        return ToolResult(ok=False, code="INTERNAL_ERROR", message=f"查询失败: {exc}")
+
+    storage = getattr(vm, "storage_profile", None)
+    if not storage:
+        return ToolResult(ok=False, code="NO_DATA", message="无法获取 VM 存储配置")
+
+    def _get_disk_sku(disk_id: str) -> dict[str, str]:
+        """通过 disk resource ID 获取磁盘 SKU 和大小。"""
+        try:
+            parts = disk_id.split("/")
+            disk_rg = parts[4]
+            disk_name = parts[-1]
+            disk = client.disks.get(disk_rg, disk_name)
+            sku_name = getattr(getattr(disk, "sku", None), "name", "unknown")
+            size_gb = getattr(disk, "disk_size_gb", None)
+            return {"sku": sku_name, "size_gb": size_gb}
+        except Exception:
+            return {"sku": "unknown", "size_gb": None}
+
+    # OS 盘
+    os_disk = getattr(storage, "os_disk", None)
+    os_disk_info: dict[str, Any] = {"name": "unknown", "sku": "unknown", "size_gb": None}
+    if os_disk:
+        os_disk_info["name"] = getattr(os_disk, "name", "unknown") or "unknown"
+        managed = getattr(os_disk, "managed_disk", None)
+        if managed and getattr(managed, "id", None):
+            os_disk_info.update(_get_disk_sku(managed.id))
+
+    # 数据盘（按 LUN 排列）
+    data_disks: list[dict[str, Any]] = []
+    for dd in getattr(storage, "data_disks", []) or []:
+        lun = getattr(dd, "lun", None)
+        name = getattr(dd, "name", "unknown") or "unknown"
+        info: dict[str, Any] = {"lun": lun, "name": name, "sku": "unknown", "size_gb": None}
+        managed = getattr(dd, "managed_disk", None)
+        if managed and getattr(managed, "id", None):
+            info.update(_get_disk_sku(managed.id))
+        data_disks.append(info)
+    data_disks.sort(key=lambda d: d.get("lun") or 0)
+
+    return ToolResult(
+        ok=True,
+        code="OK",
+        message=f"查询成功，OS盘 + {len(data_disks)} 块数据盘",
+        data={
+            "os_disk": os_disk_info,
+            "data_disks": data_disks,
+        },
+    )
+
+
 def vm_query(resource_group: str | None = None, vm_name: str | None = None) -> ToolResult:
     client = get_compute_client()
     settings = get_settings()

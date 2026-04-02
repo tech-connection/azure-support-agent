@@ -17,7 +17,6 @@ from app.models.schemas import AgentRunResponse, ToolResult
 from app.observability.audit import audit_log
 from app.services.azure_client import get_compute_client
 from app.skills.framework_skills import build_framework_skills
-from app.tools.azure_service_health_tools import list_service_health_events
 from app.tools.azure_vm_tools import (
     _extract_power_state,
     get_vm_resource_health as query_vm_resource_health,
@@ -260,23 +259,23 @@ class ReactAgent:
             "- 查询和操作 VM（启动、关机、释放、重启）\n"
             "- 诊断 VM、4层负载均衡器（LB）、7层应用网关（AppGw）的运行状况\n"
             "- 查询 Azure 资源运行状况和监控指标（时间采用北京时间）\n"
-            # "- 提交 Azure 支持工单（可先查询服务和问题分类）\n\n"
+            "- 查询订阅级服务健康事件（服务问题/计划维护/安全公告/计费更新）\n"
             "## 路由规则\n"
             "- 用户要求诊断负载均衡器但未说明 4 层或 7 层时，优先调用 detect_and_diagnose_lb 自动判断资源类型\n"
             "- 执行关机或释放操作前，先简要说明影响\n\n"
             "## 输出规则（强制）\n"
-            "调用诊断类脚本（diagnose_vm_health、diagnose_lb_health、diagnose_appgw_health、detect_and_diagnose_lb）后，"
+            "调用诊断类脚本（diagnose_vm_health、diagnose_lb_health、diagnose_appgw_health、detect_and_diagnose_lb、query_service_health）后，"
             "必须将脚本返回的完整文本**原样输出**给用户，禁止缩写、改写、省略或重新组织。"
         )
         skills_provider = SkillsProvider(skills=build_framework_skills())
         return client.as_agent(
             name="SupportAgent",
             instructions=instructions,
-            tools=self._make_vm_tools(),
+            tools=self._make_tools(),
             context_providers=[skills_provider],
         )
 
-    def _make_vm_tools(self) -> list[Any]:
+    def _make_tools(self) -> list[Any]:
         compute_client = get_compute_client()
 
         def get_vm_info(
@@ -368,17 +367,6 @@ class ReactAgent:
             self._record_tool_result("get_vm_metrics", "metrics", result)
             return json.dumps(result.model_dump(), ensure_ascii=False)
 
-        def get_service_health_events(
-            event_type: Annotated[
-                str | None,
-                Field(description="Event type filter: ServiceIssue (服务问题), PlannedMaintenance (计划内维护), HealthAdvisory (运行状况公告), SecurityAdvisory (安全公告). Leave empty for all types."),
-            ] = None,
-            top_n: Annotated[int, Field(description="Number of recent events to return, default 10.")] = 10,
-        ) -> str:
-            result = list_service_health_events(event_type=event_type, top_n=top_n)
-            self._record_tool_result("get_service_health_events", "service_health", result)
-            return json.dumps(result.model_dump(), ensure_ascii=False)
-
         return [
             get_vm_info,
             start_vm,
@@ -387,7 +375,6 @@ class ReactAgent:
             restart_vm,
             get_vm_resource_health,
             get_vm_metrics,
-            get_service_health_events,
         ]
 
     def _get_framework_session(self, session_id: str):
