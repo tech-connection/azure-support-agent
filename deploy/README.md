@@ -6,65 +6,9 @@
 
 ## 前置条件
 
-1. **Azure CLI** 已安装并登录：`az login`
-2. **SSH 密钥对**：`ssh-keygen -t rsa -b 4096`（如已有可跳过）
-3. **Service Principal**：Agent 需要 SPN 来调用 Azure Management API
-   ```bash
-   az ad sp create-for-rbac --name "azure-support-agent-sp" --role Reader \
-     --scopes /subscriptions/<SUBSCRIPTION_ID> --output json
-   ```
-4. **飞书企业自建应用**：获取 App ID 和 App Secret，开启机器人消息接收能力
-5. **Azure OpenAI 资源**：记下 Endpoint、API Key、部署名称
+1. **飞书企业自建应用**：获取 App ID 和 App Secret，开启机器人消息接收能力
+2. **Azure OpenAI 资源**：记下 Endpoint、API Key、部署名称
 
----
-
-## 方式一：Azure CLI 部署
-
-```bash
-# 1. 创建资源组（如已有可跳过）
-az group create --name rg-support-agent --location eastasia
-
-# 2. 部署（交互式填写参数）
-az deployment group create \
-  --resource-group rg-support-agent \
-  --template-file deploy/azuredeploy.json
-
-# 或使用参数文件
-az deployment group create \
-  --resource-group rg-support-agent \
-  --template-file deploy/azuredeploy.json \
-  --parameters vmName=azure-support-agent \
-    adminSshPublicKey="$(cat ~/.ssh/id_rsa.pub)" \
-    feishuAppId=cli_xxx \
-    feishuAppSecret=xxx \
-    azureOpenaiEndpoint=https://xxx.openai.azure.com/ \
-    azureOpenaiApiKey=xxx \
-    azureOpenaiDeployment=gpt-4.1 \
-    azureSubscriptionId=xxx \
-    azureTenantId=xxx \
-    azureClientId=xxx \
-    azureClientSecret=xxx
-
-# 3. 查看输出
-az deployment group show \
-  --resource-group rg-support-agent \
-  --name azuredeploy \
-  --query properties.outputs
-```
-
-部署完成后会输出：
-- `vmPublicIp` — VM 公网 IP
-- `sshCommand` — SSH 登录命令
-- `deployLogCommand` — 查看部署日志
-- `serviceStatusCommand` — 查看服务状态
-
----
-
-## 方式二：Azure 门户一键部署
-
-1. 点击上方 **Deploy to Azure** 按钮
-2. 在 Azure 门户中填写参数表单
-3. 点击 **"审阅 + 创建"** → **"创建"**
 
 ---
 
