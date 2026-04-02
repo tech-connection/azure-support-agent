@@ -1,6 +1,6 @@
 # 一键部署到 Azure VM
 
-[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fzzl221000%2Fazure-support-agent%2Fmain%2Fdeploy%2Fazuredeploy.json)
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Ftech-connection%2Fazure-support-agent%2Fmain%2Fdeploy%2Fazuredeploy.json)
 
 > 点击按钮即可跳转 Azure 门户填写参数并部署。
 

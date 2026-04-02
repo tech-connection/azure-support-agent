@@ -2,7 +2,7 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "metadata": {
-    "description": "Azure Support Agent — 一键部署到 Azure VM"
+    "description": "Azure Support Agent — 一键部署到 Azure VM（支持已有 VNet/子网或自动创建）"
   },
   "parameters": {
     "vmName": {
@@ -20,13 +20,34 @@
       "defaultValue": "azureagent",
       "metadata": { "description": "管理员用户名" }
     },
-    "adminSshPublicKey": {
+    "authenticationType": {
+      "type": "string",
+      "defaultValue": "sshPublicKey",
+      "allowedValues": ["sshPublicKey", "password"],
+      "metadata": { "description": "认证方式：SSH 公钥（推荐）或密码" }
+    },
+    "adminPasswordOrKey": {
       "type": "securestring",
-      "metadata": { "description": "管理员 SSH 公钥" }
+      "metadata": { "description": "SSH 公钥内容（ssh-rsa AAAA...）或密码（至少12位，含大小写+数字+特殊字符）" }
+    },
+    "existingVnetResourceGroup": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": { "description": "已有 VNet 所在资源组（留空 = 自动创建新 VNet）" }
+    },
+    "existingVnetName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": { "description": "已有 VNet 名称（留空 = 自动创建新 VNet）" }
+    },
+    "existingSubnetName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": { "description": "已有子网名称（留空 = 自动创建）" }
     },
     "gitRepoUrl": {
       "type": "string",
-      "defaultValue": "https://github.com/zzl221000/azure-support-agent.git",
+      "defaultValue": "https://github.com/tech-connection/azure-support-agent.git",
       "metadata": { "description": "GitHub 仓库 URL" }
     },
     "gitBranch": {
@@ -85,12 +106,30 @@
   },
   "variables": {
     "location": "[resourceGroup().location]",
-    "vnetName": "[concat(parameters('vmName'), '-vnet')]",
-    "subnetName": "default",
+    "useExistingVnet": "[and(not(empty(parameters('existingVnetName'))), not(empty(parameters('existingSubnetName'))))]",
+    "newVnetName": "[concat(parameters('vmName'), '-vnet')]",
+    "newSubnetName": "default",
     "nsgName": "[concat(parameters('vmName'), '-nsg')]",
     "pipName": "[concat(parameters('vmName'), '-pip')]",
     "nicName": "[concat(parameters('vmName'), '-nic')]",
-    "subnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('subnetName'))]",
+    "existingSubnetId": "[if(and(not(empty(parameters('existingVnetName'))), not(empty(parameters('existingSubnetName')))), resourceId(if(empty(parameters('existingVnetResourceGroup')), resourceGroup().name, parameters('existingVnetResourceGroup')), 'Microsoft.Network/virtualNetworks/subnets', parameters('existingVnetName'), parameters('existingSubnetName')), 'placeholder')]",
+    "newSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('newVnetName'), variables('newSubnetName'))]",
+    "subnetId": "[if(variables('useExistingVnet'), variables('existingSubnetId'), variables('newSubnetId'))]",
+    "linuxConfigSsh": {
+      "disablePasswordAuthentication": true,
+      "ssh": {
+        "publicKeys": [
+          {
+            "path": "[concat('/home/', parameters('adminUsername'), '/.ssh/authorized_keys')]",
+            "keyData": "[parameters('adminPasswordOrKey')]"
+          }
+        ]
+      }
+    },
+    "linuxConfigPassword": {
+      "disablePasswordAuthentication": false
+    },
+    "linuxConfiguration": "[if(equals(parameters('authenticationType'), 'sshPublicKey'), variables('linuxConfigSsh'), variables('linuxConfigPassword'))]",
     "cloudInitScript": "[base64(concat('#!/bin/bash\nset -euo pipefail\nexec > /var/log/agent-deploy.log 2>&1\necho \"=== Azure Support Agent deployment started at $(date) ===\"\n\nAPP_DIR=\"/opt/azure-support-agent\"\nAPP_USER=\"', parameters('adminUsername'), '\"\n\napt-get update -y\napt-get install -y python3.13 python3.13-venv python3-pip git\n\nif [ -d \"$APP_DIR\" ]; then\n  cd \"$APP_DIR\" && git fetch --all && git checkout ', parameters('gitBranch'), ' && git pull\nelse\n  git clone -b ', parameters('gitBranch'), ' ', parameters('gitRepoUrl'), ' \"$APP_DIR\"\nfi\n\ncd \"$APP_DIR\"\n\npython3.13 -m venv .venv\nsource .venv/bin/activate\npip install --upgrade pip\npip install -r requirements.txt\n\ncat > .env << ENVEOF\nAZURE_SUBSCRIPTION_ID=', parameters('azureSubscriptionId'), '\nAZURE_AUTH_MODE=spn\nAZURE_TENANT_ID=', parameters('azureTenantId'), '\nAZURE_CLIENT_ID=', parameters('azureClientId'), '\nAZURE_CLIENT_SECRET=', parameters('azureClientSecret'), '\nAZURE_OPENAI_ENDPOINT=', parameters('azureOpenaiEndpoint'), '\nAZURE_OPENAI_API_KEY=', parameters('azureOpenaiApiKey'), '\nAZURE_OPENAI_API_VERSION=', parameters('azureOpenaiApiVersion'), '\nAZURE_OPENAI_DEPLOYMENT=', parameters('azureOpenaiDeployment'), '\nFEISHU_APP_ID=', parameters('feishuAppId'), '\nFEISHU_APP_SECRET=', parameters('feishuAppSecret'), '\nAPP_LOG_LEVEL=', parameters('appLogLevel'), '\nENVEOF\n\nchmod 600 .env\nmkdir -p logs\n\ncat > /etc/systemd/system/azure-support-agent.service << SVCEOF\n[Unit]\nDescription=Azure Support Agent (Feishu Long Connection)\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=', parameters('adminUsername'), '\nWorkingDirectory=/opt/azure-support-agent\nExecStart=/opt/azure-support-agent/.venv/bin/python -m app.main\nRestart=always\nRestartSec=10\nEnvironment=PYTHONUNBUFFERED=1\n\n[Install]\nWantedBy=multi-user.target\nSVCEOF\n\nchown -R \"$APP_USER\":\"$APP_USER\" \"$APP_DIR\"\nsystemctl daemon-reload\nsystemctl enable azure-support-agent\nsystemctl start azure-support-agent\n\necho \"=== Deployment finished at $(date) ===\"\n'))]"
   },
   "resources": [
@@ -118,9 +157,10 @@
       }
     },
     {
+      "condition": "[not(variables('useExistingVnet'))]",
       "type": "Microsoft.Network/virtualNetworks",
       "apiVersion": "2023-11-01",
-      "name": "[variables('vnetName')]",
+      "name": "[variables('newVnetName')]",
       "location": "[variables('location')]",
       "dependsOn": [
         "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
@@ -129,7 +169,7 @@
         "addressSpace": { "addressPrefixes": ["10.0.0.0/16"] },
         "subnets": [
           {
-            "name": "[variables('subnetName')]",
+            "name": "[variables('newSubnetName')]",
             "properties": {
               "addressPrefix": "10.0.0.0/24",
               "networkSecurityGroup": {
@@ -156,8 +196,9 @@
       "name": "[variables('nicName')]",
       "location": "[variables('location')]",
       "dependsOn": [
-        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
-        "[resourceId('Microsoft.Network/publicIPAddresses', variables('pipName'))]"
+        "[if(variables('useExistingVnet'), resourceId('Microsoft.Network/publicIPAddresses', variables('pipName')), resourceId('Microsoft.Network/virtualNetworks', variables('newVnetName')))]",
+        "[resourceId('Microsoft.Network/publicIPAddresses', variables('pipName'))]",
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
       ],
       "properties": {
         "ipConfigurations": [
@@ -171,7 +212,10 @@
               "privateIPAllocationMethod": "Dynamic"
             }
           }
-        ]
+        ],
+        "networkSecurityGroup": {
+          "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+        }
       }
     },
     {
@@ -187,17 +231,8 @@
         "osProfile": {
           "computerName": "[parameters('vmName')]",
           "adminUsername": "[parameters('adminUsername')]",
-          "linuxConfiguration": {
-            "disablePasswordAuthentication": true,
-            "ssh": {
-              "publicKeys": [
-                {
-                  "path": "[concat('/home/', parameters('adminUsername'), '/.ssh/authorized_keys')]",
-                  "keyData": "[parameters('adminSshPublicKey')]"
-                }
-              ]
-            }
-          },
+          "adminPassword": "[if(equals(parameters('authenticationType'), 'password'), parameters('adminPasswordOrKey'), null())]",
+          "linuxConfiguration": "[variables('linuxConfiguration')]",
           "customData": "[variables('cloudInitScript')]"
         },
         "storageProfile": {
