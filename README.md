@@ -2,6 +2,8 @@
 
 基于 **Python 3.13** + **agent-framework + Azure OpenAI** 的 Azure 技术支持 Agent，通过飞书机器人或 CLI 交互。
 
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fzzl221000%2Fazure-support-agent%2Fmain%2Fdeploy%2Fazuredeploy.json)
+
 ## 功能
 
 | 类别 | 能力 |

@@ -1,5 +1,9 @@
 # 一键部署到 Azure VM
 
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fzzl221000%2Fazure-support-agent%2Fmain%2Fdeploy%2Fazuredeploy.json)
+
+> 点击按钮即可跳转 Azure 门户填写参数并部署。
+
 ## 前置条件
 
 1. **Azure CLI** 已安装并登录：`az login`
@@ -20,20 +24,31 @@
 # 1. 创建资源组（如已有可跳过）
 az group create --name rg-support-agent --location eastasia
 
-# 2. 编辑参数文件
-cp deploy/main.parameters.json deploy/my-params.json
-# 填写 my-params.json 中的所有 <YOUR_...> 占位符
-
-# 3. 部署
+# 2. 部署（交互式填写参数）
 az deployment group create \
   --resource-group rg-support-agent \
-  --template-file deploy/main.bicep \
-  --parameters @deploy/my-params.json
+  --template-file deploy/azuredeploy.json
 
-# 4. 查看输出
+# 或使用参数文件
+az deployment group create \
+  --resource-group rg-support-agent \
+  --template-file deploy/azuredeploy.json \
+  --parameters vmName=azure-support-agent \
+    adminSshPublicKey="$(cat ~/.ssh/id_rsa.pub)" \
+    feishuAppId=cli_xxx \
+    feishuAppSecret=xxx \
+    azureOpenaiEndpoint=https://xxx.openai.azure.com/ \
+    azureOpenaiApiKey=xxx \
+    azureOpenaiDeployment=gpt-4.1 \
+    azureSubscriptionId=xxx \
+    azureTenantId=xxx \
+    azureClientId=xxx \
+    azureClientSecret=xxx
+
+# 3. 查看输出
 az deployment group show \
   --resource-group rg-support-agent \
-  --name main \
+  --name azuredeploy \
   --query properties.outputs
 ```
 
@@ -47,10 +62,9 @@ az deployment group show \
 
 ## 方式二：Azure 门户一键部署
 
-1. 打开 Azure 门户 → 搜索 **"部署自定义模板"**
-2. 选择 **"在编辑器中生成自己的模板"**
-3. 上传 `deploy/main.bicep` 文件
-4. 填写参数表单 → 点击 **"审阅 + 创建"**
+1. 点击上方 **Deploy to Azure** 按钮
+2. 在 Azure 门户中填写参数表单
+3. 点击 **"审阅 + 创建"** → **"创建"**
 
 ---
 
@@ -137,4 +151,4 @@ sudo -u azureagent git pull
 sudo systemctl restart azure-support-agent
 ```
 
-或重新跑一次 Bicep 部署（cloud-init 会 git pull 最新代码）。
+或重新跑一次部署（cloud-init 会 git pull 最新代码）。
