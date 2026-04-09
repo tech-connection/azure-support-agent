@@ -15,11 +15,15 @@ owner: azure-support-agent
 
 ## ❗ 输出规则（强制）
 
-**必须将 `query_service_health` 的返回值完整、原样输出给用户。**
-- 禁止改写、缩写、重新组织语言或省略任何部分。
+**必须将 `query_service_health` 的返回值按以下规则输出给用户：**
+- 保持原始格式结构不变（行数、字段顺序、分隔符等完全一致）。
+- **主题（标题）必须翻译为中文**，其他字段值保持原样。
 - 禁止只输出部分事件而丢弃其余。
-- 返回值已包含格式化的事件列表，直接发给用户即可。
-- 如果需要补充说明，可以在原样输出之后追加，但不得修改或替换原始输出。
+- 如果需要补充说明，可以在输出之后追加，但不得修改格式结构。
+
+### 翻译示例
+原始：`1. 主题：PIR - Microsoft Defender for Cloud delayed security scan results`
+输出：`1. 主题：PIR - Microsoft Defender for Cloud 安全扫描结果延迟`
 
 ## Trigger Policy
 当用户表达以下意图时启用：

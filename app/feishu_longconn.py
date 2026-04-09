@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -68,7 +69,67 @@ _CARD_HEADERS = {
     "【VM诊断摘要】": ("blue", "VM 诊断报告"),
     "【LB诊断摘要】": ("blue", "LB 诊断报告"),
     "【AppGw诊断摘要】": ("blue", "AppGw 诊断报告"),
+    "【服务健康事件】": ("turquoise", "服务健康事件"),
 }
+
+# ── 服务健康事件 → 表格卡片 ────────────────────
+_SH_EVENT_RE = re.compile(
+    r'(\d+)\. 主题：(.+)\n'
+    r'\s+\[(.+?)\s*~\s*(.+?)\]\s*状态=(\S+)\s*\|\s*级别=(\S+)\s*\|\s*类型=(.+)\n'
+    r'\s+影响：(.+)',
+)
+_STATUS_ICON = {"Resolved": "✅", "Active": "🔴"}
+
+
+def _shorten_dt(dt_str: str) -> str:
+    """'2026-03-16 01:12:47' → '03-16 01:12', '进行中' stays."""
+    dt_str = dt_str.strip()
+    if dt_str in ("进行中", "N/A"):
+        return dt_str
+    parts = dt_str.split(" ", 1)
+    date_part = "-".join(parts[0].split("-")[1:])  # drop year
+    time_part = ":".join(parts[1].split(":")[:2]) if len(parts) > 1 else ""
+    return f"{date_part} {time_part}".strip()
+
+
+def _build_service_health_elements(text: str) -> list[dict]:
+    """将服务健康事件文本解析为飞书卡片元素（表格）。"""
+    elements: list[dict] = []
+
+    # 提取订阅信息行
+    first_line = text.split("\n", 1)[0]
+    sub_match = re.search(r'订阅=([\w-]+)', first_line)
+    if sub_match:
+        elements.append({
+            "tag": "markdown",
+            "content": f"**订阅** `{sub_match.group(1)}`",
+        })
+
+    # 解析事件
+    rows = _SH_EVENT_RE.findall(text)
+    if not rows:
+        elements.append({"tag": "markdown", "content": text})
+        return elements
+
+    # 每个事件渲染为独立 markdown 块
+    for idx, title, start, end, status, _level, ev_type, impact in rows:
+        icon = _STATUS_ICON.get(status, "⚪")
+        short_start = _shorten_dt(start)
+        short_end = _shorten_dt(end)
+        block = (
+            f"**{idx}. {title.strip()}**\n"
+            f"{icon} {status}　|　{ev_type.strip()}\n"
+            f"📅 {short_start} ~ {short_end}\n"
+            f"🔧 {impact.strip()}"
+        )
+        elements.append({"tag": "markdown", "content": block})
+        elements.append({"tag": "hr"})
+
+    # 移除最后一个多余的分割线
+    if elements and elements[-1].get("tag") == "hr":
+        elements.pop()
+
+    return elements
 
 
 def _build_card(text: str) -> str | None:
@@ -82,6 +143,19 @@ def _build_card(text: str) -> str | None:
             break
     else:
         return None
+
+    # 服务健康事件 → 表格卡片
+    if text.startswith("【服务健康事件】"):
+        elements = _build_service_health_elements(text)
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "template": header_color,
+                "title": {"tag": "plain_text", "content": header_title},
+            },
+            "elements": elements,
+        }
+        return json.dumps(card, ensure_ascii=False)
 
     # 拆分为各段落
     sections = text.split("\n\n")
