@@ -11,5 +11,6 @@ pydantic-settings==2.10.1
 python-dotenv==1.1.1
 pytest==8.4.1
 openai==1.99.9
-agent-framework
+agent-framework-core==1.0.0rc5
+agent-framework-azure-ai==1.0.0rc5
 lark-oapi>=1.4.14
